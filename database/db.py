@@ -1,8 +1,10 @@
 """Async SQLAlchemy engine and session factory."""
 
 import logging
+import ssl as _ssl
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -11,19 +13,52 @@ from database.models import Base
 
 logger = logging.getLogger(__name__)
 
-# Convert postgresql:// → postgresql+asyncpg://
-_raw_url = config.DATABASE_URL
-if _raw_url.startswith("postgresql://"):
-    _raw_url = _raw_url.replace("postgresql://", "postgresql+asyncpg://", 1)
-elif _raw_url.startswith("postgres://"):
-    _raw_url = _raw_url.replace("postgres://", "postgresql+asyncpg://", 1)
+
+def _build_engine_url_and_ssl(database_url: str) -> tuple[str, dict]:
+    """
+    Convert a standard postgres:// URL to asyncpg-compatible form.
+
+    asyncpg does not accept ?sslmode= query param — it must be passed as
+    an ssl= connect_arg. Strip sslmode from the URL and build the ssl context.
+    """
+    url = database_url
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    sslmode = qs.pop("sslmode", ["disable"])[0]
+
+    # Rebuild URL without sslmode
+    new_query = urlencode({k: v[0] for k, v in qs.items()})
+    clean_url = urlunparse(parsed._replace(query=new_query))
+
+    connect_args: dict = {}
+    if sslmode in ("require", "verify-ca", "verify-full"):
+        ssl_ctx = _ssl.create_default_context()
+        if sslmode == "require":
+            # Neon provides valid certs; still set CERT_NONE to avoid
+            # hostname mismatch issues with some connection poolers.
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = _ssl.CERT_NONE
+        connect_args["ssl"] = ssl_ctx
+    elif sslmode == "prefer":
+        connect_args["ssl"] = True
+
+    return clean_url, connect_args
+
+
+_engine_url, _connect_args = _build_engine_url_and_ssl(config.DATABASE_URL)
 
 engine = create_async_engine(
-    _raw_url,
+    _engine_url,
     echo=False,
     pool_size=5,
     max_overflow=10,
     pool_pre_ping=True,
+    connect_args=_connect_args,
 )
 
 AsyncSessionLocal = async_sessionmaker(
