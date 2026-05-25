@@ -33,6 +33,7 @@ def _clean_url_and_ssl(url: str) -> tuple[str, dict]:
     parsed = urlparse(url)
     qs = parse_qs(parsed.query)
     sslmode = qs.pop("sslmode", ["disable"])[0]
+    qs.pop("channel_binding", None)  # asyncpg doesn't accept this param
     new_query = urlencode({k: v[0] for k, v in qs.items()})
     clean_url = urlunparse(parsed._replace(query=new_query))
 
