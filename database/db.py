@@ -30,6 +30,8 @@ def _build_engine_url_and_ssl(database_url: str) -> tuple[str, dict]:
     parsed = urlparse(url)
     qs = parse_qs(parsed.query)
     sslmode = qs.pop("sslmode", ["disable"])[0]
+    qs.pop("channel_binding", None)  # asyncpg doesn't accept this param
+
 
     # Rebuild URL without sslmode
     new_query = urlencode({k: v[0] for k, v in qs.items()})
